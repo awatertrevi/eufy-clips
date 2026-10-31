@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eufy Clips</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%2303a9f4' d='M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z'/%3E%3C/svg%3E">
+<style>
+  :root { --bg: #fafafa; --card: #fff; --text: #1c1c1c; --muted: #6b6b6b; --line: #e3e3e3; --accent: #03a9f4; --warn: #c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --card: #1c1c1c; --text: #e8e8e8; --muted: #9a9a9a; --line: #2e2e2e; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 16px; padding: 4px 12px; cursor: pointer; font: inherit; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #status { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  #auth { display: none; margin-top: 8px; gap: 8px; }
+  #auth input { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
+  main { padding: 12px 16px 32px; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 16px 0 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+  .event { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; padding: 0; text-align: left; color: inherit; font: inherit; }
+  .thumb { aspect-ratio: 16 / 9; background: var(--line) center / cover no-repeat; }
+  .meta { padding: 6px 8px; display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }
+  .tag { color: var(--muted); }
+  #more { margin: 16px auto; display: block; }
+  dialog { padding: 0; border: 0; border-radius: 10px; background: #000; max-width: min(96vw, 1100px); width: 100%; }
+  dialog::backdrop { background: rgba(0, 0, 0, .7); }
+  dialog video { width: 100%; display: block; }
+  dialog p { margin: 0; padding: 8px 12px; color: #ddd; font-size: 13px; display: flex; justify-content: space-between; }
+  dialog button { background: none; border: 0; color: #ddd; font: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row" id="cameras"></div>
+  <div id="status">Loading…</div>
+  <form class="row" id="auth">
+    <span id="authLabel">Eufy verification code:</span>
+    <img id="captcha" alt="" hidden>
+    <input id="code" autocomplete="one-time-code" required>
+    <button class="chip" type="submit">Send</button>
+  </form>
+</header>
+<main>
+  <div id="days"></div>
+  <button class="chip" id="more" hidden>Older events</button>
+</main>
+<dialog id="player">
+  <video controls autoplay playsinline></video>
+  <p><span id="playing"></span><button id="close">Close</button></p>
+</dialog>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// Inside the Home Assistant iframe the cookie is third-party and not sent, so carry the token on every URL.
+const token = new URLSearchParams(location.search).get("token") || "";
+const station = new URLSearchParams(location.search).get("station") || "";
+const withToken = path => {
+  const extra = new URLSearchParams();
+  if (token) extra.set("token", token);
+  if (station) extra.set("station", station);
+  const query = extra.toString();
+  return query ? `${path}${path.includes("?") ? "&" : "?"}${query}` : path;
+};
+const api = path => fetch(withToken(path), { credentials: "same-origin" }).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)));
+let cameras = [], device = "", oldest = null;
+const names = () => Object.fromEntries(cameras.map(c => [c.serial, c.name]));
+
+async function status() {
+  const s = await api("api/status");
+  const total = Object.values(s.events).reduce((a, b) => a + b, 0);
+  $("status").textContent = `Eufy: ${s.eufy} · ${total} events` + (s.sync ? ` · synced ${new Date(s.sync.at).toLocaleTimeString()}` : "");
+  const needs = s.eufy === "needs-2fa" || s.eufy === "needs-captcha";
+  $("auth").style.display = needs ? "flex" : "none";
+  $("authLabel").textContent = s.eufy === "needs-captcha" ? "Captcha:" : "Eufy verification code:";
+  $("captcha").hidden = !s.captcha;
+  if (s.captcha) $("captcha").src = s.captcha;
+  return s;
+}
+
+$("auth").onsubmit = async e => {
+  e.preventDefault();
+  const captcha = !$("captcha").hidden;
+  await fetch(withToken(captcha ? "api/captcha" : "api/2fa"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(captcha ? { answer: $("code").value } : { code: $("code").value }) });
+  $("code").value = "";
+  setTimeout(status, 3000);
+};
+
+function renderCameras() {
+  const box = $("cameras");
+  box.replaceChildren(...[{ serial: "", name: "All cameras" }, ...cameras].map(c => {
+    const b = document.createElement("button");
+    b.className = "chip" + (c.serial === device ? " on" : "");
+    b.textContent = c.name;
+    b.onclick = () => { device = c.serial; renderCameras(); load(true); };
+    return b;
+  }));
+}
+
+const lazy = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const el = entry.target;
+    el.style.backgroundImage = `url("${el.dataset.src}")`;
+    lazy.unobserve(el);
+  }
+}, { rootMargin: "200px" });
+
+async function load(reset) {
+  if (reset) { $("days").replaceChildren(); oldest = null; }
+  const params = new URLSearchParams({ limit: "60" });
+  if (device) params.set("device", device);
+  if (oldest) params.set("before", oldest);
+  const events = await api(`api/events?${params}`);
+  const n = names();
+  for (const e of events) {
+    const date = e.start.slice(0, 10);
+    let grid = document.querySelector(`[data-day="${date}"] .grid`);
+    if (!grid) {
+      const section = document.createElement("section");
+      section.dataset.day = date;
+      const label = new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+      section.innerHTML = `<h2>${esc(label)}</h2><div class="grid"></div>`;
+      $("days").append(section);
+      grid = section.querySelector(".grid");
+    }
+    const card = document.createElement("button");
+    card.className = "event";
+    const seconds = Math.round((new Date(e.end.replace(" ", "T")) - new Date(e.start.replace(" ", "T"))) / 1000);
+    card.innerHTML = `<div class="thumb"></div><div class="meta"><span>${esc(e.start.slice(11, 19))} · ${esc(n[e.device] ?? e.device)}</span><span class="tag">${esc(e.detections.join(", ") || "motion")} · ${seconds}s</span></div>`;
+    const thumb = card.querySelector(".thumb");
+    thumb.dataset.src = withToken(`api/events/${e.id}/thumb.jpg?v=2`);
+    lazy.observe(thumb);
+    card.onclick = () => play(e, n);
+    grid.append(card);
+  }
+  if (events.length) oldest = events[events.length - 1].start;
+  $("more").hidden = events.length < 60;
+}
+
+function play(e, n) {
+  const video = $("player").querySelector("video");
+  $("playing").textContent = `${n[e.device] ?? e.device} · ${e.start} · fetching from HomeBase…`;
+  video.src = withToken(`api/events/${e.id}/clip.mp4`);
+  video.oncanplay = () => { $("playing").textContent = `${n[e.device] ?? e.device} · ${e.start}`; };
+  video.onerror = () => { $("playing").textContent = `${n[e.device] ?? e.device} · ${e.start} · could not load clip`; };
+  $("player").showModal();
+}
+$("close").onclick = () => $("player").close();
+$("player").onclose = () => { const v = $("player").querySelector("video"); v.pause(); v.removeAttribute("src"); v.load(); };
+$("more").onclick = () => load(false);
+
+(async () => {
+  try { await status(); } catch (error) { $("status").textContent = `Cannot reach Eufy Clips (${error.message})`; return; }
+  cameras = await api("api/cameras").catch(() => []);
+  renderCameras();
+  await load(true);
+  setInterval(status, 15000);
+})();
+</script>
+</body>
+</html>

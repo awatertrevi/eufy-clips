@@ -1,0 +1,31 @@
+{
+  "name": "eufy-clips",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browse recorded clips and motion events of an Eufy HomeBase 2 (eufyCam 2/2C) from Home Assistant.",
+  "type": "module",
+  "main": "src/main.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "eufy-security-client": "4.1.1-1",
+    "jpeg-js": "0.4.4"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/awatertrevi/eufy-clips.git"
+  },
+  "keywords": [
+    "eufy",
+    "homebase",
+    "eufycam",
+    "home-assistant",
+    "clips"
+  ]
+}

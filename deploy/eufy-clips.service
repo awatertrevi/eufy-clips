@@ -1,0 +1,21 @@
+[Unit]
+Description=Eufy Clips (recorded HomeBase 2 clips for Home Assistant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=eufy-clips
+WorkingDirectory=/opt/eufy-clips
+EnvironmentFile=/etc/eufy-clips.env
+Environment=EUFY_CLIPS_DATA=/var/lib/eufy-clips
+# The HomeBase stores local times; set this to the zone of the cameras.
+Environment=TZ=Europe/Amsterdam
+ExecStart=/usr/bin/env node src/main.mjs
+Restart=on-failure
+RestartSec=30
+MemoryMax=400M
+Nice=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
