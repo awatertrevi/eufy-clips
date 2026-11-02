@@ -8,7 +8,8 @@ has stored on its own storage. Eufy Clips reads the HomeBase's event database ov
 app uses, downloads a clip when you press play, decrypts it and serves it as a normal MP4.
 
 - Timeline of events per day with thumbnails and detection type (person, motion, …), filterable per camera
-- Clips fetched on demand (typically 7–25 s the first time, instant from the cache afterwards)
+- Clips of the last 7 days are prefetched in the background and play instantly; older clips are fetched on demand
+  (typically 7–25 s the first time, instant from the cache afterwards)
 - Several HomeBases (also in different houses) in one service, with a per-HomeBase view
 - One small Node service, no cloud storage subscription needed
 
@@ -48,6 +49,12 @@ Notes for anyone building on this:
 
 The index syncs today/yesterday every few minutes and back-fills five older days per run (30 days by default).
 
+After each sync, clips and thumbnails of the last `EUFY_CLIPS_PREFETCH_DAYS` days are downloaded in the background,
+newest first. Prefetching only starts P2P work when the queue is empty, so a clip you click waits for at most the
+one download already running. It stops when the cache is at 90 % of its budget instead of evicting clips it just
+fetched; a clip that fails twice is skipped until the service restarts. Expect roughly 2 MB and 10–20 s of HomeBase
+time per clip. Recordings stay on the HomeBase, so prefetching does not wake the cameras.
+
 ## Install
 
 Requires Node ≥ 22 and `ffmpeg`.
@@ -82,7 +89,9 @@ shows a field to enter it. The session is kept in the data directory, so restart
 | `EUFY_CLIPS_DATA` | `./data` | event index, Eufy session and clip cache |
 | `EUFY_CLIPS_SYNC_MINUTES` | `5` | |
 | `EUFY_CLIPS_BACKFILL_DAYS` | `30` | |
-| `EUFY_CLIPS_CACHE_MB` | `800` | clip cache budget (least recently used clips are removed) |
+| `EUFY_CLIPS_CACHE_MB` | `1024` | clip cache budget (least recently used clips are removed) |
+| `EUFY_CLIPS_MIN_FREE_MB` | `1024` | the cache budget shrinks so the disk keeps at least this much free |
+| `EUFY_CLIPS_PREFETCH_DAYS` | `7` | prefetch clips and thumbnails of the last N days after each sync; `0` = on demand only |
 
 ## Home Assistant
 

@@ -1,5 +1,5 @@
-// On-demand clip and thumbnail cache. Clips are fetched from the HomeBase the first time they are
-// played, muxed to MP4 with ffmpeg and kept until the cache exceeds its size budget.
+// Clip and thumbnail cache. Clips are fetched from the HomeBase when played or prefetched, muxed to MP4
+// with ffmpeg and kept until the cache exceeds its size budget.
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -9,6 +9,7 @@ export class ClipCache {
   #client;
   #dir;
   #maxBytes;
+  #minFreeBytes;
   #log;
   #inflight = new Map();
 
@@ -16,6 +17,7 @@ export class ClipCache {
     this.#client = client;
     this.#dir = path.join(config.dataDir, "cache");
     this.#maxBytes = config.cacheMaxMb * 1024 * 1024;
+    this.#minFreeBytes = config.minFreeMb * 1024 * 1024;
     this.#log = log;
     fs.mkdirSync(this.#dir, { recursive: true });
     for (const file of fs.readdirSync(this.#dir)) {
@@ -36,14 +38,36 @@ export class ClipCache {
     return fs.existsSync(this.clipPath(event));
   }
 
+  hasThumbnail(event) {
+    return fs.existsSync(this.thumbPath(event));
+  }
+
+  #clips() {
+    return fs.readdirSync(this.#dir).filter(f => f.endsWith(".mp4")).map(f => {
+      const stat = fs.statSync(path.join(this.#dir, f));
+      return { file: path.join(this.#dir, f), size: stat.size, used: stat.atimeMs };
+    });
+  }
+
+  /** Bytes of cached clips. */
+  size() {
+    return this.#clips().reduce((sum, c) => sum + c.size, 0);
+  }
+
+  /** The configured budget, lowered when the disk would otherwise drop below the minimum free space. */
+  budget() {
+    const disk = fs.statfsSync(this.#dir);
+    return Math.max(0, Math.min(this.#maxBytes, this.size() + disk.bavail * disk.bsize - this.#minFreeBytes));
+  }
+
   /** Path to a playable MP4 for the event, downloading it once even when requested concurrently. */
-  clip(event) {
+  clip(event, { background = false } = {}) {
     const file = this.clipPath(event);
     if (fs.existsSync(file)) return Promise.resolve(file);
     return this.#once(`clip:${event.id}`, async () => {
       const started = Date.now();
-      this.#log.info(`clip ${event.id}: requested`);
-      const { video, audio, fps, stats } = await this.#client.downloadClip(event);
+      this.#log.info(`clip ${event.id}: ${background ? "prefetch" : "requested"}`);
+      const { video, audio, fps, stats } = await this.#client.downloadClip(event, { background });
       await mux(video, audio, fps, file);
       this.#log.info(`clip ${event.id}: ${(fs.statSync(file).size / 1e6).toFixed(1)} MB in ${((Date.now() - started) / 1000).toFixed(1)} s ${JSON.stringify(stats)}`);
       this.#evict();
@@ -51,11 +75,11 @@ export class ClipCache {
     });
   }
 
-  thumbnail(event) {
+  thumbnail(event, { background = false } = {}) {
     const file = this.thumbPath(event);
     if (fs.existsSync(file)) return Promise.resolve(file);
     return this.#once(`thumb:${event.id}`, async () => {
-      const data = await this.#client.thumbnail(event.station, event.thumb);
+      const data = await this.#client.thumbnail(event.station, event.thumb, { background });
       if (!data?.length) throw new Error("empty thumbnail");
       fs.writeFileSync(file, repairThumbnail(data));
       return file;
@@ -71,13 +95,11 @@ export class ClipCache {
 
   /** Remove least recently used clips once the cache is over budget; thumbnails are small and stay. */
   #evict() {
-    const clips = fs.readdirSync(this.#dir).filter(f => f.endsWith(".mp4")).map(f => {
-      const stat = fs.statSync(path.join(this.#dir, f));
-      return { file: path.join(this.#dir, f), size: stat.size, used: stat.atimeMs };
-    }).sort((a, b) => a.used - b.used);
+    const clips = this.#clips().sort((a, b) => a.used - b.used);
+    const budget = this.budget();
     let total = clips.reduce((sum, c) => sum + c.size, 0);
     for (const clip of clips) {
-      if (total <= this.#maxBytes) break;
+      if (total <= budget) break;
       fs.rmSync(clip.file, { force: true });
       total -= clip.size;
     }

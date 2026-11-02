@@ -14,6 +14,7 @@ export class Sync {
   #backfilled = new Set();
   running = false;
   last = null;
+  onSynced = null;
 
   constructor(client, store, config, log) {
     this.#client = client;
@@ -53,6 +54,7 @@ export class Sync {
       }
       this.last = { at: new Date().toISOString(), added };
       if (added) this.#log.info(`sync: ${added} new events`);
+      this.onSynced?.();
     } finally {
       this.running = false;
     }
