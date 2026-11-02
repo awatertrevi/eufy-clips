@@ -107,13 +107,19 @@ export class EufyClient extends EventEmitter {
 
   /**
    * Run P2P work one task at a time (the HomeBase handles one request per session reliably), highest
-   * priority first: a clip someone is waiting for must not queue behind thumbnails or a backfill sync.
+   * priority first: a clip someone is waiting for must not queue behind thumbnails or a backfill sync, and
+   * background prefetching always comes last.
    */
   #serial(task, priority = PRIORITY.sync) {
     return new Promise((resolve, reject) => {
       this.#tasks.push({ task, priority, resolve, reject });
       this.#next();
     });
+  }
+
+  /** True when no P2P work is running or waiting; background prefetching only starts then. */
+  get idle() {
+    return !this.#busy && !this.#tasks.length;
   }
 
   async #next() {
@@ -176,7 +182,7 @@ export class EufyClient extends EventEmitter {
   }
 
   /** Fetch the decrypted JPEG thumbnail stored next to an event on the HomeBase. */
-  thumbnail(stationSerial, file) {
+  thumbnail(stationSerial, file, { background = false } = {}) {
     return this.#serial(async () => {
       const station = await this.#station(stationSerial);
       const image = new Promise((resolve, reject) => {
@@ -185,7 +191,7 @@ export class EufyClient extends EventEmitter {
       });
       station.downloadImage(file);
       return image;
-    }, PRIORITY.thumbnail);
+    }, background ? PRIORITY.prefetch : PRIORITY.thumbnail);
   }
 
   async #eccKey(station, cipherId) {
@@ -200,7 +206,7 @@ export class EufyClient extends EventEmitter {
   }
 
   /** Download one recorded clip and return its decrypted H.264 and AAC elementary streams. */
-  downloadClip(event) {
+  downloadClip(event, { background = false } = {}) {
     return this.#serial(async () => {
       const station = await this.#station(event.station);
       const device = await this.#eufy.getDevice(event.device);
@@ -255,7 +261,7 @@ export class EufyClient extends EventEmitter {
         throw error;
       }
       return { video: Buffer.concat(decoder.video), audio: Buffer.concat(decoder.audio), fps: decoder.fps ?? 15, stats: { ...decoder.stats, fps: decoder.fps } };
-    }, PRIORITY.clip);
+    }, background ? PRIORITY.prefetch : PRIORITY.clip);
   }
 
   close() {
@@ -263,5 +269,5 @@ export class EufyClient extends EventEmitter {
   }
 }
 
-const PRIORITY = { sync: 0, thumbnail: 1, clip: 2 };
+const PRIORITY = { prefetch: -1, sync: 0, thumbnail: 1, clip: 2 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
