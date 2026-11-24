@@ -7,14 +7,16 @@ import { repairThumbnail } from "./thumbnail.mjs";
 
 export class ClipCache {
   #client;
+  #wired;
   #dir;
   #maxBytes;
   #minFreeBytes;
   #log;
   #inflight = new Map();
 
-  constructor(client, config, log) {
+  constructor(client, wired, config, log) {
     this.#client = client;
+    this.#wired = wired;
     this.#dir = path.join(config.dataDir, "cache");
     this.#maxBytes = config.cacheMaxMb * 1024 * 1024;
     this.#minFreeBytes = config.minFreeMb * 1024 * 1024;
@@ -36,6 +38,11 @@ export class ClipCache {
 
   has(event) {
     return fs.existsSync(this.clipPath(event));
+  }
+
+  /** False when the event can never get a clip, so the UI can say so instead of offering play. */
+  playable(event) {
+    return this.#wired?.has(event.station) ? this.has(event) || this.#wired.covers(event) : true;
   }
 
   hasThumbnail(event) {
@@ -67,6 +74,14 @@ export class ClipCache {
     return this.#once(`clip:${event.id}`, async () => {
       const started = Date.now();
       this.#log.info(`clip ${event.id}: ${background ? "prefetch" : "requested"}`);
+      // A wired camera's own recording is encrypted with a key the account never hands out; its clip is
+      // cut from the RTSP archive this service keeps instead.
+      if (this.#wired?.has(event.station)) {
+        await this.#wired.cut(event, file);
+        this.#log.info(`clip ${event.id}: ${(fs.statSync(file).size / 1e6).toFixed(1)} MB cut from the archive in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+        this.#evict();
+        return file;
+      }
       const { video, audio, fps, stats } = await this.#client.downloadClip(event, { background });
       await mux(video, audio, fps, file);
       this.#log.info(`clip ${event.id}: ${(fs.statSync(file).size / 1e6).toFixed(1)} MB in ${((Date.now() - started) / 1000).toFixed(1)} s ${JSON.stringify(stats)}`);

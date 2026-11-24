@@ -24,9 +24,28 @@ app uses, downloads a clip when you press play, decrypts it and serves it as a n
 | eufyCam 2C / 2C Pro | T8113 | 1920×1080, 15 fps, with audio |
 | Video Doorbell (battery) | T8210 | 2048×1536 |
 | Video Doorbell Dual | T8224 | recording on the HomeBase |
+| Indoor Cam Pan & Tilt 2K | T8410, firmware 2.3.2.6 | standalone, recordings on its own SD card; clips come from RTSP (see below) |
 
 HomeBase 3 has its own protocol and is not supported (see [eufy-mega-security](https://github.com/mscodemonkey/eufy-mega-security)
-for HomeBase 3). Standalone cameras without a HomeBase are not supported.
+for HomeBase 3).
+
+### Wired cameras (T8410)
+
+A wired Indoor Cam is its own station: it answers the same database and thumbnail commands, so its event list
+and thumbnails work exactly like a HomeBase camera's. Its **clips cannot be decrypted**. Every keyframe of a
+recording carries a 128-byte RSA-wrapped media key, and the matching private key is not the station cipher the
+account hands out: `get_ciphers` answers an empty set for the `cipher_id 1` these rows carry, over both the v2
+and the v3 endpoint. The app plays the same recordings, so it holds that key already, and it never sends one to
+the camera — a playback request (`CMD_RECORD_VIEW 1025`) yields byte-identical keyframes to a plain download.
+
+So the clip comes from the camera's RTSP stream instead. The service switches RTSP on, records every wired
+camera continuously into clock-aligned one-minute segments, and cuts a clip out of that archive when one is
+asked for. The event index and thumbnails still come from the camera. An event from before the archive starts
+has no clip and the UI marks it "no clip".
+
+Budget roughly 11 GB per camera per day (1080p15 H.264 plus 16 kHz mono AAC); `EUFY_CLIPS_WIRED_DAYS` and
+`EUFY_CLIPS_WIRED_MAX_GB` bound it, and `EUFY_CLIPS_WIRED_DIR` should point at a disk that can take it.
+Set `EUFY_CLIPS_WIRED_DAYS=0` to leave wired cameras as an index with thumbnails only.
 
 ## How it works
 
@@ -92,6 +111,9 @@ shows a field to enter it. The session is kept in the data directory, so restart
 | `EUFY_CLIPS_CACHE_MB` | `1024` | clip cache budget (least recently used clips are removed) |
 | `EUFY_CLIPS_MIN_FREE_MB` | `1024` | the cache budget shrinks so the disk keeps at least this much free |
 | `EUFY_CLIPS_PREFETCH_DAYS` | `7` | prefetch clips and thumbnails of the last N days after each sync; `0` = on demand only |
+| `EUFY_CLIPS_WIRED_DIR` | `<data>/segments` | RTSP archive of the wired cameras; put it on a disk with room |
+| `EUFY_CLIPS_WIRED_DAYS` | `7` | how long that archive is kept; `0` disables recording wired cameras |
+| `EUFY_CLIPS_WIRED_MAX_GB` | `200` | size ceiling for the archive; the oldest segments go first |
 
 ## Home Assistant
 

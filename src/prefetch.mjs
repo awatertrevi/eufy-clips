@@ -42,7 +42,9 @@ export class Prefetch {
     // An event that ended moments ago may still be written to the HomeBase's storage.
     const settled = localStamp(new Date(Date.now() - 120_000));
     const events = this.#store.list({ limit: Infinity })
-      .filter(e => e.start >= since && e.end && e.end <= settled && (this.#attempts.get(e.id) ?? 0) < MAX_ATTEMPTS);
+      .filter(e => e.start >= since && e.end && e.end <= settled && (this.#attempts.get(e.id) ?? 0) < MAX_ATTEMPTS)
+      // A wired camera's event from before its archive starts can never get a clip; don't keep trying.
+      .filter(e => this.#cache.playable(e));
     let fetched = 0;
     for (const event of events) {
       if (this.#client.state !== "connected") break;
