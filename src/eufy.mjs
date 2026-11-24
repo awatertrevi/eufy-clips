@@ -3,6 +3,7 @@
 import { EventEmitter } from "node:events";
 import { EufySecurity, LogLevel } from "eufy-security-client";
 import { ClipDecoder, cipherKeyId } from "./decode.mjs";
+import { WIRED_MODELS } from "./wired.mjs";
 
 const CMD_SET_PAYLOAD = 1350;
 const CMD_DATABASE = 1306;
@@ -80,11 +81,43 @@ export class EufyClient extends EventEmitter {
     await this.#eufy.connect({ captcha: { captchaId: this.captcha?.id, captchaCode: answer }, force: false });
   }
 
-  /** HomeBase 2 stations (T8010) on the account, optionally limited to the configured serials. */
+  /**
+   * Stations whose events this service indexes: HomeBase 2 hubs and the wired cameras, which are their
+   * own station. Optionally limited to the configured serials.
+   */
   async stations() {
     const all = await this.#eufy.getStations();
-    return all.filter(s => s.getModel() === "T8010" &&
+    return all.filter(s => (s.getModel() === "T8010" || WIRED_MODELS.has(s.getModel())) &&
       (!this.#config.stations.length || this.#config.stations.includes(s.getSerial())));
+  }
+
+  /**
+   * The wired cameras, with the RTSP address their clips are recorded from. RTSP is switched on when the
+   * camera has it off; the camera reports the address back as a property a moment later.
+   */
+  async wiredCameras() {
+    const out = [];
+    for (const station of await this.stations()) {
+      if (!WIRED_MODELS.has(station.getModel())) continue;
+      const serial = station.getSerial();
+      try {
+        const device = await this.#eufy.getDevice(serial);
+        // The address is only known once the camera is on the P2P session: it reports it as a property
+        // there, and the cached cloud value is empty.
+        await this.#station(serial);
+        if (!device.getPropertyValue("rtspStream")) await station.setRTSPStream(device, true);
+        for (let i = 0; i < 20 && !device.getPropertyValue("rtspStreamUrl"); i++) await sleep(1000);
+        const url = device.getPropertyValue("rtspStreamUrl");
+        if (!url) {
+          this.#log.warn(`eufy: ${device.getName()} reports no RTSP address`);
+          continue;
+        }
+        out.push({ serial, name: device.getName(), url });
+      } catch (error) {
+        this.#log.warn(`eufy: RTSP setup for ${serial} failed: ${error.message}`);
+      }
+    }
+    return out;
   }
 
   async cameras() {

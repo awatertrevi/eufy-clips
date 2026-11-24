@@ -42,14 +42,19 @@ export class Sync {
       let added = 0;
       for (const [station, devices] of byStation) {
         const serials = devices.map(d => d.serial);
-        added += await this.#window(station, serials, addDays(today, -1), addDays(today, 1));
-        let budget = 5;
-        for (let back = 2; back <= this.#config.backfillDays && budget > 0; back++) {
-          const key = `${station}:${day(addDays(today, -back))}`;
-          if (this.#backfilled.has(key)) continue;
-          added += await this.#window(station, serials, addDays(today, -back), addDays(today, -back + 1));
-          this.#backfilled.add(key);
-          budget--;
+        // One unreachable station (a camera asleep, an SD card missing) must not stop the others.
+        try {
+          added += await this.#window(station, serials, addDays(today, -1), addDays(today, 1));
+          let budget = 5;
+          for (let back = 2; back <= this.#config.backfillDays && budget > 0; back++) {
+            const key = `${station}:${day(addDays(today, -back))}`;
+            if (this.#backfilled.has(key)) continue;
+            added += await this.#window(station, serials, addDays(today, -back), addDays(today, -back + 1));
+            this.#backfilled.add(key);
+            budget--;
+          }
+        } catch (error) {
+          this.#log.warn(`sync ${station}: ${error.message}`);
         }
       }
       this.last = { at: new Date().toISOString(), added };

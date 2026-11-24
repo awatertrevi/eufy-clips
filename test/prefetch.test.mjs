@@ -10,13 +10,14 @@ const ago = minutes => {
 const event = (id, minutesAgo) => ({ id, start: ago(minutesAgo + 1), end: ago(minutesAgo) });
 const log = { info() {}, warn() {} };
 
-function setup(events, { budget = 1e9, clipSize = 1, fail = new Set() } = {}) {
+function setup(events, { budget = 1e9, clipSize = 1, fail = new Set(), unplayable = new Set() } = {}) {
   const clips = new Set();
   const thumbs = new Set();
   const order = [];
   const store = { list: () => [...events].sort((a, b) => (a.start < b.start ? 1 : -1)) };
   const cache = {
     has: e => clips.has(e.id),
+    playable: e => !unplayable.has(e.id),
     hasThumbnail: e => thumbs.has(e.id),
     size: () => clips.size * clipSize,
     budget: () => budget,
@@ -67,4 +68,11 @@ test("gives up on a clip after two failed attempts", async () => {
 test("does nothing when prefetching is disabled", async () => {
   const disabled = new Prefetch({ state: "connected", idle: true }, { list: () => [event(1, 10)] }, {}, { prefetchDays: 0 }, log);
   assert.equal(disabled.kick(), undefined);
+});
+
+test("skips an event that can never get a clip", async () => {
+  const { prefetch, order, thumbs } = setup([event(1, 30), event(2, 20)], { unplayable: new Set([1]) });
+  await prefetch.kick();
+  assert.deepEqual(order, [2]);
+  assert.deepEqual([...thumbs], [2]);
 });
