@@ -33,6 +33,11 @@ const config = {
   wiredDir: env("EUFY_CLIPS_WIRED_DIR", ""),
   wiredDays: Number(env("EUFY_CLIPS_WIRED_DAYS", "7")),
   wiredMaxGb: Number(env("EUFY_CLIPS_WIRED_MAX_GB", "200")),
+  // Cameras are named in the Eufy app, which allows duplicates: an indoor and an outdoor camera in the
+  // same room end up with one name. "SERIAL=Name,SERIAL=Name" renames them here.
+  names: Object.fromEntries(env("EUFY_CLIPS_NAMES", "").split(",").map(p => p.trim()).filter(Boolean)
+    .map(pair => { const i = pair.indexOf("="); return [pair.slice(0, i).trim(), pair.slice(i + 1).trim()]; })
+    .filter(([serial, name]) => serial && name)),
 };
 if (!config.wiredDir) config.wiredDir = `${config.dataDir}/segments`;
 if (config.token.length < 24) throw new Error("EUFY_CLIPS_TOKEN must be at least 24 characters");

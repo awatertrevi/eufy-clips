@@ -135,3 +135,11 @@ test("an event past the end of the archive is refused, not half-delivered", { sk
   await assert.rejects(() => wired.cut(future, path.join(dir, "future.mp4")), /still being written|outside the local archive/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("a configured name overrides the one from the Eufy account", async () => {
+  const { EufyClient } = await import("../src/eufy.mjs");
+  const config = { names: { AAA: "Meerkoet buiten" } };
+  const client = new EufyClient(config, log);
+  assert.equal(client.name({ getSerial: () => "AAA", getName: () => "Meerkoet" }), "Meerkoet buiten");
+  assert.equal(client.name({ getSerial: () => "BBB", getName: () => "Berent" }), "Berent");
+});

@@ -112,7 +112,7 @@ export class EufyClient extends EventEmitter {
           this.#log.warn(`eufy: ${device.getName()} reports no RTSP address`);
           continue;
         }
-        out.push({ serial, name: device.getName(), url });
+        out.push({ serial, name: this.name(device), url });
       } catch (error) {
         this.#log.warn(`eufy: RTSP setup for ${serial} failed: ${error.message}`);
       }
@@ -124,8 +124,13 @@ export class EufyClient extends EventEmitter {
     const stations = new Set((await this.stations()).map(s => s.getSerial()));
     return (await this.#eufy.getDevices())
       .filter(d => stations.has(d.getStationSerial()) && d.isCamera())
-      .map(d => ({ serial: d.getSerial(), name: d.getName(), model: d.getModel(), station: d.getStationSerial() }))
+      .map(d => ({ serial: d.getSerial(), name: this.name(d), model: d.getModel(), station: d.getStationSerial() }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** The configured name for a camera, falling back to the one it carries in the Eufy account. */
+  name(device) {
+    return this.#config.names?.[device.getSerial()] ?? device.getName();
   }
 
   async #station(serial) {
