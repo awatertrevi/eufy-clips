@@ -12,7 +12,9 @@ import { spawn } from "node:child_process";
 /** Models that are their own station and keep recordings we cannot decrypt. */
 export const WIRED_MODELS = new Set(["T8410"]);
 
-const SEGMENT_SECONDS = 60;
+// MPEG-TS, not MP4: a recorder that is killed mid-segment leaves a readable TS file, while an MP4
+// without its closing index cannot be opened at all and would poison every cut that touches it.
+const SEGMENT_SECONDS = 30;
 const RESTART_DELAY_MS = 5_000;
 // The camera's clock and the stream clock drift a second or two, so a cut gets a little air on both sides.
 const PRE_ROLL_S = 2;
@@ -23,9 +25,9 @@ const pad = n => String(n).padStart(2, "0");
 const stamp = date =>
   `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 
-/** "20261125-002448.mp4" (local time, as ffmpeg's strftime writes it) → epoch ms. */
+/** "20261125-002448.ts" (local time, as ffmpeg's strftime writes it) → epoch ms. */
 function segmentStart(file) {
-  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\.mp4$/.exec(file);
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\.ts$/.exec(file);
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m.map(Number);
   return new Date(y, mo - 1, d, h, mi, s).getTime();
@@ -108,8 +110,8 @@ export class WiredCameras {
         // 16 kHz mono costs almost nothing on a Pi.
         "-c:a", "aac", "-ar", "16000", "-ac", "1",
         "-f", "segment", "-segment_time", String(SEGMENT_SECONDS), "-segment_atclocktime", "1",
-        "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mp4",
-        path.join(dir, "%Y%m%d-%H%M%S.mp4"),
+        "-reset_timestamps", "1", "-strftime", "1", "-segment_format", "mpegts",
+        path.join(dir, "%Y%m%d-%H%M%S.ts"),
       ];
       const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
       rec.child = child;
@@ -129,7 +131,11 @@ export class WiredCameras {
     return rec;
   }
 
-  /** Segments of one camera, oldest first, each with the window it covers. */
+  /**
+   * Segments of one camera, oldest first, each with the window it covers. The newest file is still
+   * being written, which a TS file takes in its stride, so it counts too: its end is how far the
+   * recorder has got, which keeps a clip available within seconds of an event ending.
+   */
   #segments(serial) {
     const dir = path.join(this.#dir, serial);
     let files;
@@ -142,11 +148,16 @@ export class WiredCameras {
       .map(file => ({ file: path.join(dir, file), start: segmentStart(file) }))
       .filter(s => s.start !== null)
       .sort((a, b) => a.start - b.start);
-    return list.map((s, i) => ({
-      ...s,
-      // A segment runs until the next one starts; the newest one is still being written.
-      end: i + 1 < list.length ? list[i + 1].start : s.start + SEGMENT_SECONDS * 1000,
-    }));
+    return list.map((s, i) => {
+      if (i + 1 < list.length) return { ...s, end: list[i + 1].start };
+      let end = s.start;
+      try {
+        end = Math.max(s.start, fs.statSync(s.file).mtimeMs);
+      } catch {
+        /* the recorder rotated the file away between the listing and here */
+      }
+      return { ...s, end };
+    });
   }
 
   /** True when the archive covers the event's whole window. */
@@ -156,7 +167,9 @@ export class WiredCameras {
     if (from === null) return false;
     const segments = this.#segments(event.station);
     if (!segments.length) return false;
-    return segments[0].start <= from && segments[segments.length - 1].end >= Math.min(to, Date.now());
+    // The event needs a finished recording: its start inside the archive, its end no later than the
+    // last closed segment, so a clip is offered only once it can really be cut.
+    return segments[0].start <= from && segments[segments.length - 1].end >= to;
   }
 
   /**
@@ -167,11 +180,13 @@ export class WiredCameras {
     const from = localTime(event.start);
     const to = localTime(event.end) ?? from + 30_000;
     if (from === null) throw new Error(`event ${event.id} has no start time`);
+    const archive = this.#segments(event.station);
+    if (!archive.length) throw new Error("not recorded: the local archive is still empty");
     const wantFrom = from - PRE_ROLL_S * 1000;
-    const wantTo = Math.min(to + POST_ROLL_S * 1000, Date.now() - 1000);
-    if (wantTo <= wantFrom) throw new Error("recording is still being written");
+    const wantTo = Math.min(to + POST_ROLL_S * 1000, archive[archive.length - 1].end);
+    if (wantTo <= wantFrom) throw new Error("the recording of this event is still being written");
 
-    const segments = this.#segments(event.station).filter(s => s.end > wantFrom && s.start < wantTo);
+    const segments = archive.filter(s => s.end > wantFrom && s.start < wantTo);
     if (!segments.length) throw new Error("not recorded: outside the local archive");
 
     const tmp = `${file}.tmp`;

@@ -39,8 +39,9 @@ and the v3 endpoint. The app plays the same recordings, so it holds that key alr
 the camera — a playback request (`CMD_RECORD_VIEW 1025`) yields byte-identical keyframes to a plain download.
 
 So the clip comes from the camera's RTSP stream instead. The service switches RTSP on, records every wired
-camera continuously into clock-aligned one-minute segments, and cuts a clip out of that archive when one is
-asked for. The event index and thumbnails still come from the camera. An event from before the archive starts
+camera continuously into clock-aligned 30-second MPEG-TS segments, and cuts a clip out of that archive when
+one is asked for. The container matters: a recorder killed mid-segment leaves a readable TS file, while an
+MP4 without its closing index cannot be opened at all and fails every cut that touches it. The event index and thumbnails still come from the camera. An event from before the archive starts
 has no clip and the UI marks it "no clip".
 
 Budget roughly 11 GB per camera per day (1080p15 H.264 plus 16 kHz mono AAC); `EUFY_CLIPS_WIRED_DAYS` and
