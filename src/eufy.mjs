@@ -102,10 +102,11 @@ export class EufyClient extends EventEmitter {
       const serial = station.getSerial();
       try {
         const device = await this.#eufy.getDevice(serial);
-        if (!device.getPropertyValue("rtspStream")) {
-          await station.setRTSPStream(device, true);
-          for (let i = 0; i < 15 && !device.getPropertyValue("rtspStreamUrl"); i++) await sleep(1000);
-        }
+        // The address is only known once the camera is on the P2P session: it reports it as a property
+        // there, and the cached cloud value is empty.
+        await this.#station(serial);
+        if (!device.getPropertyValue("rtspStream")) await station.setRTSPStream(device, true);
+        for (let i = 0; i < 20 && !device.getPropertyValue("rtspStreamUrl"); i++) await sleep(1000);
         const url = device.getPropertyValue("rtspStreamUrl");
         if (!url) {
           this.#log.warn(`eufy: ${device.getName()} reports no RTSP address`);
