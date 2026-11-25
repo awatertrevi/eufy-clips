@@ -26,6 +26,10 @@ const MAX_RESTART_DELAY_MS = 60_000;
 // Below this there is no clip worth offering, only a flash of video.
 const MIN_CLIP_MS = 3_000;
 const STALL_MS = 90_000;
+// How often a camera may be asked to switch its RTSP server back on; it needs a P2P round trip.
+const REVIVE_INTERVAL_MS = 120_000;
+/** ffmpeg's word for "this camera is not serving a stream right now". */
+const REFUSED = /404|DESCRIBE failed|Connection refused|401|Unauthorized/i;
 const WATCHDOG_INTERVAL_MS = 30_000;
 // The camera's clock and the stream clock drift a second or two, so a cut gets a little air on both sides.
 const PRE_ROLL_S = 2;
@@ -56,6 +60,11 @@ export class WiredCameras {
   #dir;
   #cameras = new Map();
   #recorders = new Map();
+  /**
+   * Called with a serial when a camera refuses the stream, so the caller can switch its RTSP server
+   * back on: the camera drops it silently and no amount of reconnecting by ffmpeg brings it back.
+   */
+  onRefused = null;
   #pruner = null;
   #watchdog = null;
   #stopped = false;
@@ -113,7 +122,7 @@ export class WiredCameras {
    * reboots, drops off the wifi or refuses a second viewer, and the archive should resume by itself.
    */
   #record(camera) {
-    const rec = { child: null, restarts: 0, failures: 0, startedAt: 0 };
+    const rec = { child: null, restarts: 0, failures: 0, startedAt: 0, revivedAt: 0 };
     const spawnOnce = () => {
       if (this.#stopped) return;
       rec.startedAt = Date.now();
@@ -144,6 +153,10 @@ export class WiredCameras {
         // every few seconds for as long as it is away, so each failed run waits a little longer.
         rec.failures = Date.now() - rec.startedAt > MAX_RESTART_DELAY_MS ? 0 : rec.failures + 1;
         const delay = Math.min(RESTART_DELAY_MS * Math.max(1, rec.failures), MAX_RESTART_DELAY_MS);
+        if (REFUSED.test(stderr) && Date.now() - rec.revivedAt > REVIVE_INTERVAL_MS) {
+          rec.revivedAt = Date.now();
+          this.#revive(camera.serial);
+        }
         this.#log.warn(`wired ${camera.name}: recorder stopped (${code}) ${stderr.trim().slice(0, 200)}; restarting in ${delay / 1000}s`);
         setTimeout(spawnOnce, delay).unref();
       });
@@ -277,6 +290,18 @@ export class WiredCameras {
       return file;
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /** Ask the owner to switch the camera's stream back on, and point the recorder at what comes back. */
+  async #revive(serial) {
+    if (!this.onRefused) return;
+    try {
+      const camera = await this.onRefused(serial);
+      this.#log.info(`wired ${this.#cameras.get(serial)?.name ?? serial}: asked the camera for its stream again`);
+      if (camera?.url) this.start([{ ...this.#cameras.get(serial), ...camera }]);
+    } catch (error) {
+      this.#log.warn(`wired ${serial}: could not switch the stream back on: ${error.message}`);
     }
   }
 

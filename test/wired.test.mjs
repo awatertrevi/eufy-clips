@@ -260,3 +260,31 @@ test("a recorder that stopped writing is killed so it starts over", { skip: !has
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a camera that refuses the stream is asked to switch it back on", { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wired-"));
+  const wired = new WiredCameras({ wiredDir: dir, wiredDays: 7, wiredMaxGb: 1 }, log);
+  // The camera keeps answering RTSP but says it has no stream, which is what a T8410 does once it has
+  // quietly dropped its RTSP server. Reconnecting never helps; only the switch does.
+  const server = net.createServer(socket => {
+    socket.on("data", data => {
+      const seq = /CSeq: *(\d+)/i.exec(String(data))?.[1] ?? "1";
+      socket.write(`RTSP/1.0 404 Not Found\r\nCSeq: ${seq}\r\n\r\n`);
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const asked = [];
+  wired.onRefused = serial => {
+    asked.push(serial);
+    return null; // the caller would hand back a fresh address here
+  };
+  try {
+    wired.start([{ serial: SERIAL, name: "Test", url: `rtsp://127.0.0.1:${server.address().port}/live0` }]);
+    for (let i = 0; i < 50 && !asked.length; i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(asked, [SERIAL]);
+  } finally {
+    wired.stop();
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

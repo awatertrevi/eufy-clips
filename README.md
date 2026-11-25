@@ -54,6 +54,11 @@ single RTSP slot the camera serves — and ffmpeg then waits instead of exiting.
 that has written nothing for 90 seconds, and a camera that keeps refusing is retried with a growing delay
 instead of every five seconds.
 
+A T8410 also drops its RTSP server now and then without saying so: the `rtspStream` property still reports
+"on" while every request is answered with 404, and no amount of reconnecting brings it back. A refused
+recorder therefore asks for the switch to be turned off and on again over P2P (at most once every two
+minutes) instead of only retrying the connection.
+
 Budget roughly 11 GB per camera per day (1080p15 H.264 plus 16 kHz mono AAC); `EUFY_CLIPS_WIRED_DAYS` and
 `EUFY_CLIPS_WIRED_MAX_GB` bound it, and `EUFY_CLIPS_WIRED_DIR` should point at a disk that can take it.
 Set `EUFY_CLIPS_WIRED_DAYS=0` to leave wired cameras as an index with thumbnails only.

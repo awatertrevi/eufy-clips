@@ -118,25 +118,41 @@ export class EufyClient extends EventEmitter {
     const out = [];
     for (const station of await this.stations()) {
       if (!WIRED_MODELS.has(station.getModel())) continue;
-      const serial = station.getSerial();
       try {
-        const device = await this.#eufy.getDevice(serial);
-        // The address is only known once the camera is on the P2P session: it reports it as a property
-        // there, and the cached cloud value is empty.
-        await this.#station(serial);
-        if (!device.getPropertyValue("rtspStream")) await station.setRTSPStream(device, true);
-        for (let i = 0; i < 20 && !device.getPropertyValue("rtspStreamUrl"); i++) await sleep(1000);
-        const url = device.getPropertyValue("rtspStreamUrl");
-        if (!url) {
-          this.#log.warn(`eufy: ${device.getName()} reports no RTSP address`);
-          continue;
-        }
-        out.push({ serial, name: this.name(device), url });
+        out.push(await this.#rtsp(station));
       } catch (error) {
-        this.#log.warn(`eufy: RTSP setup for ${serial} failed: ${error.message}`);
+        this.#log.warn(`eufy: RTSP setup for ${station.getSerial()} failed: ${error.message}`);
       }
     }
     return out;
+  }
+
+  /**
+   * Switch a camera's RTSP server on again. The camera drops it now and then without saying so — the
+   * property keeps reporting "on" while every request is answered with 404 — so the recorder asks for
+   * this when a camera refuses it, and the switch is turned off and on rather than read.
+   */
+  async enableRtsp(serial) {
+    const station = (await this.stations()).find(s => s.getSerial() === serial);
+    if (!station) throw new Error(`${serial} is not a wired camera`);
+    return this.#rtsp(station, { force: true });
+  }
+
+  async #rtsp(station, { force = false } = {}) {
+    const serial = station.getSerial();
+    const device = await this.#eufy.getDevice(serial);
+    // The address is only known once the camera is on the P2P session: it reports it as a property
+    // there, and the cached cloud value is empty.
+    await this.#station(serial);
+    if (force && device.getPropertyValue("rtspStream")) {
+      await station.setRTSPStream(device, false);
+      await sleep(1000);
+    }
+    if (force || !device.getPropertyValue("rtspStream")) await station.setRTSPStream(device, true);
+    for (let i = 0; i < 20 && !device.getPropertyValue("rtspStreamUrl"); i++) await sleep(1000);
+    const url = device.getPropertyValue("rtspStreamUrl");
+    if (!url) throw new Error(`${this.name(device)} reports no RTSP address`);
+    return { serial, name: this.name(device), url };
   }
 
   /**

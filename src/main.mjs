@@ -54,6 +54,8 @@ const sync = new Sync(client, store, config, log);
 const prefetch = new Prefetch(client, store, cache, config, log);
 sync.onSynced = () => prefetch.kick();
 startHttp({ client, store, cache, sync, wired, config, log });
+// A camera that stops serving its stream needs its RTSP switch flipped, not another connection attempt.
+wired.onRefused = serial => client.enableRtsp(serial);
 client.on("state", async state => {
   if (state !== "connected") return;
   try {
