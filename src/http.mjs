@@ -56,9 +56,9 @@ export function startHttp({ client, store, cache, sync, wired, config, log }) {
         return send(res, 200, events.map(e => ({ ...e, cached: cache.has(e), playable: cache.playable(e) })));
       }
 
-      const media = /^\/api\/events\/(\d+)\/(clip\.mp4|thumb\.jpg)$/.exec(url.pathname);
+      const media = /^\/api\/events\/([A-Za-z0-9]+-\d+)\/(clip\.mp4|thumb\.jpg)$/.exec(url.pathname);
       if (media) {
-        const event = store.get(Number(media[1]));
+        const event = store.get(media[1]);
         if (!event) return send(res, 404, { error: "unknown event" });
         const file = media[2] === "clip.mp4" ? await cache.clip(event) : await cache.thumbnail(event);
         return sendFile(req, res, file, media[2] === "clip.mp4" ? "video/mp4" : "image/jpeg", "private, max-age=86400");
