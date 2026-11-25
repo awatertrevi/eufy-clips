@@ -25,7 +25,11 @@ const MAX_RESTART_DELAY_MS = 60_000;
 // running and reading nothing, so only a watchdog on the archive itself notices.
 // Below this there is no clip worth offering, only a flash of video.
 const MIN_CLIP_MS = 3_000;
-const STALL_MS = 90_000;
+// How long ffmpeg waits for the next byte before giving up; the T8410 drops its stream every few
+// minutes, so this decides how much of the archive is missing each time.
+const READ_TIMEOUT_S = 15;
+// Backstop for a stream that keeps the socket warm but delivers nothing usable.
+const STALL_MS = 60_000;
 // How often a camera may be asked to switch its RTSP server back on; it needs a P2P round trip.
 const REVIVE_INTERVAL_MS = 120_000;
 /** ffmpeg's word for "this camera is not serving a stream right now". */
@@ -130,6 +134,9 @@ export class WiredCameras {
       const args = [
         "-nostdin", "-loglevel", "error",
         "-rtsp_transport", "tcp", "-use_wallclock_as_timestamps", "1",
+        // Without this ffmpeg waits forever on a camera that went quiet. Exiting makes it the close
+        // handler's problem, which reconnects and, if the camera refuses, asks for its stream back.
+        "-timeout", String(READ_TIMEOUT_S * 1_000_000),
         "-i", camera.url,
         "-map", "0:v:0", "-map", "0:a:0?",
         "-c:v", "copy",
