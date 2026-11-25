@@ -12,9 +12,9 @@ const row = (station, record) => ({ record_id: record, station_sn: station, devi
 
 test("two wired cameras with the same record id are two events", () => {
   const store = new EventStore(tmp());
-  store.upsert([toEvent(row("T8410MEERKOET", 2)), toEvent(row("T8410REINDER", 2))]);
-  assert.equal(store.get("T8410MEERKOET-2").station, "T8410MEERKOET");
-  assert.equal(store.get("T8410REINDER-2").station, "T8410REINDER");
+  store.upsert([toEvent(row("T8410CAMA", 2)), toEvent(row("T8410CAMB", 2))]);
+  assert.equal(store.get("T8410CAMA-2").station, "T8410CAMA");
+  assert.equal(store.get("T8410CAMB-2").station, "T8410CAMB");
 });
 
 test("events saved with bare record ids are loaded with station ids", () => {
@@ -33,7 +33,7 @@ test("legacy cache files: HomeBase clips are kept, wired camera files are droppe
   const cache = new ClipCache(null, null, { dataDir: dir, cacheMaxMb: 1, minFreeMb: 0 }, log);
   cache.adoptLegacy([
     { legacyId: 1607431, event: { id: "T8010HB-1607431", station: "T8010HB", device: "T8113CAM" } },
-    { legacyId: 2, event: { id: "T8410REINDER-2", station: "T8410REINDER", device: "T8410REINDER" } },
+    { legacyId: 2, event: { id: "T8410CAMB-2", station: "T8410CAMB", device: "T8410CAMB" } },
   ]);
   assert.deepEqual(fs.readdirSync(cacheDir).sort(), ["T8010HB-1607431.v2.jpg", "T8010HB-1607431.v2.mp4"]);
 });

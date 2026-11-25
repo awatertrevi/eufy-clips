@@ -139,10 +139,10 @@ test("an event past the end of the archive is refused, not half-delivered", { sk
 
 test("a configured name overrides the one from the Eufy account", async () => {
   const { EufyClient } = await import("../src/eufy.mjs");
-  const config = { names: { AAA: "Meerkoet buiten" } };
+  const config = { names: { AAA: "Office outdoor" } };
   const client = new EufyClient(config, log);
-  assert.equal(client.name({ getSerial: () => "AAA", getName: () => "Meerkoet" }), "Meerkoet buiten");
-  assert.equal(client.name({ getSerial: () => "BBB", getName: () => "Berent" }), "Berent");
+  assert.equal(client.name({ getSerial: () => "AAA", getName: () => "Office" }), "Office outdoor");
+  assert.equal(client.name({ getSerial: () => "BBB", getName: () => "Bedroom" }), "Bedroom");
 });
 
 test("cameras with the same name become one entry, the rest stay apart", async () => {
@@ -151,15 +151,15 @@ test("cameras with the same name become one entry, the rest stay apart", async (
     getSerial: () => serial, getName: () => name, getModel: () => model, getStationSerial: () => station,
   });
   const out = groupByName(
-    [device("A", "Meerkoet", "HB1"), device("B", "Meerkoet", "CAM2", "T8410"), device("C", "Berent", "CAM2", "T8410")],
+    [device("A", "Office", "HB1"), device("B", "Office", "CAM2", "T8410"), device("C", "Bedroom", "CAM2", "T8410")],
     d => d.getName(),
   );
-  assert.deepEqual(out.map(c => c.name), ["Berent", "Meerkoet"]);
-  const merged = out.find(c => c.name === "Meerkoet");
+  assert.deepEqual(out.map(c => c.name), ["Bedroom", "Office"]);
+  const merged = out.find(c => c.name === "Office");
   assert.deepEqual(merged.members, ["A", "B"]);
   assert.equal(merged.serial, "A,B", "the filter key carries every member");
   assert.equal(merged.model, "T8113/T8410");
-  assert.deepEqual(out.find(c => c.name === "Berent").members, ["C"]);
+  assert.deepEqual(out.find(c => c.name === "Bedroom").members, ["C"]);
 });
 
 test("the event list filters on every member of a merged camera", async () => {
