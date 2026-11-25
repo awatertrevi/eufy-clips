@@ -143,3 +143,35 @@ test("a configured name overrides the one from the Eufy account", async () => {
   assert.equal(client.name({ getSerial: () => "AAA", getName: () => "Meerkoet" }), "Meerkoet buiten");
   assert.equal(client.name({ getSerial: () => "BBB", getName: () => "Berent" }), "Berent");
 });
+
+test("cameras with the same name become one entry, the rest stay apart", async () => {
+  const { groupByName } = await import("../src/eufy.mjs");
+  const device = (serial, name, station, model = "T8113") => ({
+    getSerial: () => serial, getName: () => name, getModel: () => model, getStationSerial: () => station,
+  });
+  const out = groupByName(
+    [device("A", "Meerkoet", "HB1"), device("B", "Meerkoet", "CAM2", "T8410"), device("C", "Berent", "CAM2", "T8410")],
+    d => d.getName(),
+  );
+  assert.deepEqual(out.map(c => c.name), ["Berent", "Meerkoet"]);
+  const merged = out.find(c => c.name === "Meerkoet");
+  assert.deepEqual(merged.members, ["A", "B"]);
+  assert.equal(merged.serial, "A,B", "the filter key carries every member");
+  assert.equal(merged.model, "T8113/T8410");
+  assert.deepEqual(out.find(c => c.name === "Berent").members, ["C"]);
+});
+
+test("the event list filters on every member of a merged camera", async () => {
+  const { EventStore } = await import("../src/store.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "store-"));
+  const store = new EventStore(dir);
+  store.upsert([
+    { id: 1, station: "HB1", device: "A", start: "2026-11-25 01:00:00" },
+    { id: 2, station: "CAM2", device: "B", start: "2026-11-25 02:00:00" },
+    { id: 3, station: "CAM2", device: "C", start: "2026-11-25 03:00:00" },
+  ]);
+  assert.deepEqual(store.list({ devices: ["A", "B"] }).map(e => e.id), [2, 1]);
+  assert.deepEqual(store.list({ devices: ["C"] }).map(e => e.id), [3]);
+  assert.equal(store.list({}).length, 3);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

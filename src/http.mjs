@@ -48,7 +48,8 @@ export function startHttp({ client, store, cache, sync, wired, config, log }) {
       if (url.pathname === "/api/events") {
         const events = store.list({
           stations,
-          device: url.searchParams.get("device") || undefined,
+          // One camera entry can cover several devices (same name = merged), comma separated.
+          devices: url.searchParams.get("device")?.split(",").filter(Boolean) || undefined,
           before: url.searchParams.get("before") || undefined,
           limit: Math.min(Number(url.searchParams.get("limit")) || 60, 500),
         });

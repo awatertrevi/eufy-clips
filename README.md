@@ -115,7 +115,7 @@ shows a field to enter it. The session is kept in the data directory, so restart
 | `EUFY_CLIPS_WIRED_DIR` | `<data>/segments` | RTSP archive of the wired cameras; put it on a disk with room |
 | `EUFY_CLIPS_WIRED_DAYS` | `7` | how long that archive is kept; `0` disables recording wired cameras |
 | `EUFY_CLIPS_WIRED_MAX_GB` | `200` | size ceiling for the archive; the oldest segments go first |
-| `EUFY_CLIPS_NAMES` | – | rename cameras: `SERIAL=Name,SERIAL=Name`. The Eufy app allows two cameras the same name, which the event list then cannot tell apart |
+| `EUFY_CLIPS_NAMES` | – | rename cameras: `SERIAL=Name,SERIAL=Name`. Two cameras given the same name are shown as one, with their events in a single timeline — useful for two angles on the same room |
 
 ## Home Assistant
 

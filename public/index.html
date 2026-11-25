@@ -68,7 +68,8 @@ const withToken = path => {
 };
 const api = path => fetch(withToken(path), { credentials: "same-origin" }).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)));
 let cameras = [], device = "", oldest = null;
-const names = () => Object.fromEntries(cameras.map(c => [c.serial, c.name]));
+// A camera entry can cover several devices; every member maps to the entry's name.
+const names = () => Object.fromEntries(cameras.flatMap(c => (c.members ?? [c.serial]).map(m => [m, c.name])));
 
 async function status() {
   const s = await api("api/status");

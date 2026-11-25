@@ -10,6 +10,25 @@ const CMD_DATABASE = 1306;
 const CMD_DATABASE_QUERY_LOCAL = 10017;
 const BINARY = 3;
 
+/**
+ * Fold the devices into one entry per name, keeping every member's serial. `serial` is what the UI
+ * sends back as a filter, so a merged entry lists its members comma separated.
+ */
+export function groupByName(devices, nameOf) {
+  const groups = new Map();
+  for (const device of devices) {
+    const name = nameOf(device);
+    const group = groups.get(name) ?? { name, members: [], models: [], stations: [] };
+    group.members.push(device.getSerial());
+    group.models.push(device.getModel());
+    group.stations.push(device.getStationSerial());
+    groups.set(name, group);
+  }
+  return [...groups.values()]
+    .map(g => ({ serial: g.members.join(","), name: g.name, members: g.members, model: [...new Set(g.models)].join("/"), station: g.stations[0] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export class EufyClient extends EventEmitter {
   state = "starting";
   #eufy;
@@ -120,12 +139,16 @@ export class EufyClient extends EventEmitter {
     return out;
   }
 
+  /**
+   * The cameras the UI offers, one entry per name. Giving two cameras the same name merges them into
+   * a single entry whose events are shown together: two angles on one room read better as one
+   * timeline than as two lists. `serial` is the filter key and lists every member, comma separated.
+   */
   async cameras() {
     const stations = new Set((await this.stations()).map(s => s.getSerial()));
-    return (await this.#eufy.getDevices())
-      .filter(d => stations.has(d.getStationSerial()) && d.isCamera())
-      .map(d => ({ serial: d.getSerial(), name: this.name(d), model: d.getModel(), station: d.getStationSerial() }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const devices = (await this.#eufy.getDevices())
+      .filter(d => stations.has(d.getStationSerial()) && d.isCamera());
+    return groupByName(devices, d => this.name(d));
   }
 
   /** The configured name for a camera, falling back to the one it carries in the Eufy account. */
