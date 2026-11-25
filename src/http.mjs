@@ -8,7 +8,7 @@ import { timingSafeEqual } from "node:crypto";
 const PUBLIC = path.join(import.meta.dirname, "..", "public");
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
 
-export function startHttp({ client, store, cache, sync, config, log }) {
+export function startHttp({ client, store, cache, sync, wired, config, log }) {
   const authorized = (req, url) => {
     const supplied = url.searchParams.get("token") ?? /(?:^|;\s*)eufy_clips=([^;]+)/.exec(req.headers.cookie ?? "")?.[1] ?? "";
     const a = Buffer.from(supplied);
@@ -28,7 +28,7 @@ export function startHttp({ client, store, cache, sync, config, log }) {
       }
 
       if (url.pathname === "/api/status") {
-        return send(res, 200, { eufy: client.state, captcha: client.state === "needs-captcha" ? client.captcha?.image : undefined, sync: sync.last, events: store.countsByDevice(stations) });
+        return send(res, 200, { eufy: client.state, captcha: client.state === "needs-captcha" ? client.captcha?.image : undefined, sync: sync.last, events: store.countsByDevice(stations), wired: wired?.status() });
       }
       if (url.pathname === "/api/2fa" && req.method === "POST") {
         const { code } = await body(req);
@@ -48,11 +48,12 @@ export function startHttp({ client, store, cache, sync, config, log }) {
       if (url.pathname === "/api/events") {
         const events = store.list({
           stations,
-          device: url.searchParams.get("device") || undefined,
+          // One camera entry can cover several devices (same name = merged), comma separated.
+          devices: url.searchParams.get("device")?.split(",").filter(Boolean) || undefined,
           before: url.searchParams.get("before") || undefined,
           limit: Math.min(Number(url.searchParams.get("limit")) || 60, 500),
         });
-        return send(res, 200, events.map(e => ({ ...e, cached: cache.has(e) })));
+        return send(res, 200, events.map(e => ({ ...e, cached: cache.has(e), playable: cache.playable(e) })));
       }
 
       const media = /^\/api\/events\/(\d+)\/(clip\.mp4|thumb\.jpg)$/.exec(url.pathname);

@@ -50,9 +50,9 @@ export class EventStore {
     return this.#events.get(id);
   }
 
-  list({ stations, device, before, limit = 100 } = {}) {
+  list({ stations, devices, before, limit = 100 } = {}) {
     return [...this.#events.values()]
-      .filter(e => (!stations || stations.includes(e.station)) && (!device || e.device === device) && (!before || e.start < before))
+      .filter(e => (!stations || stations.includes(e.station)) && (!devices || devices.includes(e.device)) && (!before || e.start < before))
       .sort((a, b) => (a.start < b.start ? 1 : -1))
       .slice(0, limit);
   }

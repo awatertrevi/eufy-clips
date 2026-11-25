@@ -6,6 +6,7 @@ import { EventStore } from "./store.mjs";
 import { ClipCache } from "./clips.mjs";
 import { Sync } from "./sync.mjs";
 import { Prefetch } from "./prefetch.mjs";
+import { WiredCameras } from "./wired.mjs";
 import { startHttp } from "./http.mjs";
 
 const env = (name, fallback) => {
@@ -28,7 +29,17 @@ const config = {
   cacheMaxMb: Number(env("EUFY_CLIPS_CACHE_MB", "1024")),
   minFreeMb: Number(env("EUFY_CLIPS_MIN_FREE_MB", "1024")),
   prefetchDays: Number(env("EUFY_CLIPS_PREFETCH_DAYS", "7")),
+  // Wired cameras: how long the RTSP archive their clips are cut from is kept, and where it lives.
+  wiredDir: env("EUFY_CLIPS_WIRED_DIR", ""),
+  wiredDays: Number(env("EUFY_CLIPS_WIRED_DAYS", "7")),
+  wiredMaxGb: Number(env("EUFY_CLIPS_WIRED_MAX_GB", "200")),
+  // Cameras are named in the Eufy app, which allows duplicates: an indoor and an outdoor camera in the
+  // same room end up with one name. "SERIAL=Name,SERIAL=Name" renames them here.
+  names: Object.fromEntries(env("EUFY_CLIPS_NAMES", "").split(",").map(p => p.trim()).filter(Boolean)
+    .map(pair => { const i = pair.indexOf("="); return [pair.slice(0, i).trim(), pair.slice(i + 1).trim()]; })
+    .filter(([serial, name]) => serial && name)),
 };
+if (!config.wiredDir) config.wiredDir = `${config.dataDir}/segments`;
 if (config.token.length < 24) throw new Error("EUFY_CLIPS_TOKEN must be at least 24 characters");
 fs.mkdirSync(config.dataDir, { recursive: true });
 
@@ -41,18 +52,28 @@ const log = {
 
 const client = new EufyClient(config, log);
 const store = new EventStore(config.dataDir);
-const cache = new ClipCache(client, config, log);
+const wired = new WiredCameras(config, log);
+const cache = new ClipCache(client, wired, config, log);
 const sync = new Sync(client, store, config, log);
 const prefetch = new Prefetch(client, store, cache, config, log);
 sync.onSynced = () => prefetch.kick();
-startHttp({ client, store, cache, sync, config, log });
-client.on("state", state => state === "connected" && sync.run().catch(error => log.warn(`sync: ${error.message}`)));
+startHttp({ client, store, cache, sync, wired, config, log });
+client.on("state", async state => {
+  if (state !== "connected") return;
+  try {
+    wired.start(await client.wiredCameras());
+  } catch (error) {
+    log.warn(`wired: ${error.message}`);
+  }
+  sync.run().catch(error => log.warn(`sync: ${error.message}`));
+});
 sync.start();
 await client.start();
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     store.flush();
+    wired.stop();
     client.close();
     process.exit(0);
   });
