@@ -4,10 +4,16 @@ import path from "node:path";
 
 const DETECTION = { 1: "motion", 2: "person", 3: "pet", 4: "vehicle", 5: "crying", 6: "sound" };
 
+/**
+ * Event ids are unique per station only: every camera with its own database (the wired T8410s) counts
+ * from 1, so the station serial is part of the id.
+ */
+export const eventId = (station, record) => `${station}-${record}`;
+
 /** Project a history_record_info row (plus its crop pictures) to what the UI and clip fetcher need. */
 export function toEvent(row, pictures = []) {
   return {
-    id: row.record_id,
+    id: eventId(row.station_sn, row.record_id),
     station: row.station_sn,
     device: row.device_sn,
     start: row.start_time,
@@ -24,11 +30,20 @@ export class EventStore {
   #file;
   #events = new Map();
   #dirty = false;
+  /** Events loaded with a bare record id (before ids included the station), as { legacyId, event }. */
+  legacy = [];
 
   constructor(dataDir) {
     this.#file = path.join(dataDir, "events.json");
     try {
-      for (const event of JSON.parse(fs.readFileSync(this.#file, "utf8"))) this.#events.set(event.id, event);
+      for (const event of JSON.parse(fs.readFileSync(this.#file, "utf8"))) {
+        if (typeof event.id === "number") {
+          this.legacy.push({ legacyId: event.id, event });
+          event.id = eventId(event.station, event.id);
+          this.#dirty = true;
+        }
+        this.#events.set(event.id, event);
+      }
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }

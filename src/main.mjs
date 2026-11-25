@@ -50,6 +50,8 @@ const client = new EufyClient(config, log);
 const store = new EventStore(config.dataDir);
 const wired = new WiredCameras(config, log);
 const cache = new ClipCache(client, wired, config, log);
+cache.adoptLegacy(store.legacy);
+store.flush();
 const sync = new Sync(client, store, config, log);
 const prefetch = new Prefetch(client, store, cache, config, log);
 sync.onSynced = () => prefetch.kick();
