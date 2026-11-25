@@ -27,6 +27,29 @@ export class ClipCache {
     }
   }
 
+  /**
+   * Carry cached files over from bare record ids to station-qualified ones. Wired cameras all counted
+   * from 1, so their old files may belong to another camera's event: drop those, they are cut again
+   * from the archive or fetched again as a thumbnail.
+   */
+  adoptLegacy(legacy) {
+    let moved = 0, dropped = 0;
+    for (const { legacyId, event } of legacy) {
+      for (const ext of ["mp4", "jpg"]) {
+        const old = path.join(this.#dir, `${legacyId}.v2.${ext}`);
+        if (!fs.existsSync(old)) continue;
+        const target = ext === "mp4" ? this.clipPath(event) : this.thumbPath(event);
+        // A wired camera is its own station; the wired list itself is only known once Eufy is connected.
+        if (event.station === event.device || fs.existsSync(target)) { fs.rmSync(old); dropped++; }
+        else { fs.renameSync(old, target); moved++; }
+      }
+    }
+    for (const file of fs.readdirSync(this.#dir)) {
+      if (/^\d+\.v2\.(mp4|jpg)$/.test(file)) { fs.rmSync(path.join(this.#dir, file)); dropped++; }
+    }
+    if (moved || dropped) this.#log.info(`cache: ${moved} files renamed to station ids, ${dropped} dropped`);
+  }
+
   // v2: clips cached before the completeness and channel checks may be truncated or mixed up.
   clipPath(event) {
     return path.join(this.#dir, `${event.id}.v2.mp4`);
