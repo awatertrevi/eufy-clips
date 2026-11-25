@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawnSync } from "node:child_process";
 import { WiredCameras, localTime, WIRED_MODELS } from "../src/wired.mjs";
 
@@ -174,4 +175,116 @@ test("the event list filters on every member of a merged camera", async () => {
   assert.deepEqual(store.list({ devices: ["C"] }).map(e => e.id), [3]);
   assert.equal(store.list({}).length, 3);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("an event inside a hole gets no clip, one across it gets the part that was recorded", { skip: !hasFfmpeg }, async () => {
+  const { dir, wired } = fixture();
+  const camDir = path.join(dir, SERIAL);
+  const starts = archive(dir, 2, 2);
+  assert.ok(starts, "ffmpeg fixture");
+  // The recorder was down for an hour and came back: the two halves are hours apart, and an event in
+  // between has no video at all even though the archive starts before it and ends after it.
+  const later = new Date(starts[1].getTime() + 3600_000);
+  fs.copyFileSync(path.join(camDir, name(starts[1])), path.join(camDir, name(later)));
+  register(wired);
+  const inHole = { id: 7, station: SERIAL, start: local(new Date(starts[1].getTime() + 1800_000)), end: local(new Date(starts[1].getTime() + 1810_000)) };
+  const acrossHole = { id: 8, station: SERIAL, start: local(starts[0]), end: local(new Date(later.getTime() + 1000)) };
+  assert.equal(wired.covers(inHole), false, "nothing was recorded during the hole");
+  assert.equal(wired.covers(acrossHole), true, "part of this event was recorded");
+  await assert.rejects(() => wired.cut(inHole, path.join(dir, "hole.mp4")), /not recorded/);
+  // The cut must stay on one side of the hole: concat across it fails, and the clip may not silently
+  // glue an hour later onto the first seconds as if nothing happened.
+  const out = path.join(dir, "across.mp4");
+  await wired.cut(acrossHole, out);
+  const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out], { encoding: "utf8" });
+  assert.ok(Number(probe.stdout.trim()) < 60, `clip of ${probe.stdout.trim()}s must not span the hole`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("an empty segment left by a killed recorder does not poison the cut", { skip: !hasFfmpeg }, async () => {
+  const { dir, wired } = fixture();
+  const starts = archive(dir, 3, 2);
+  assert.ok(starts, "ffmpeg fixture");
+  // ffmpeg opens the next segment before it has anything to write, so a kill at that moment leaves a
+  // file of zero bytes. concat cannot open it and used to fail the whole clip.
+  const empty = new Date(starts[2].getTime() + 2000);
+  fs.writeFileSync(path.join(dir, SERIAL, name(empty)), "");
+  register(wired);
+  const event = { id: 10, station: SERIAL, start: local(starts[0]), end: local(new Date(starts[1].getTime() + 1000)) };
+  assert.equal(wired.covers(event), true);
+  const out = path.join(dir, "empty.mp4");
+  await wired.cut(event, out);
+  assert.ok(fs.statSync(out).size > 0);
+  assert.equal(wired.covers({ id: 11, station: SERIAL, start: local(empty), end: local(new Date(empty.getTime() + 1000)) }), false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("retention also clears away empty segments", () => {
+  const { dir, config, wired } = fixture();
+  const camDir = path.join(dir, SERIAL);
+  fs.mkdirSync(camDir, { recursive: true });
+  const empty = new Date(Date.now() - 600_000);
+  const fresh = new Date(Date.now() - 60_000);
+  fs.writeFileSync(path.join(camDir, name(empty)), "");
+  fs.writeFileSync(path.join(camDir, name(fresh)), "x");
+  register(wired);
+  config.wiredDays = 7;
+  wired.prune();
+  assert.equal(fs.existsSync(path.join(camDir, name(empty))), false);
+  assert.equal(fs.existsSync(path.join(camDir, name(fresh))), true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a recorder that stopped writing is killed so it starts over", { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wired-"));
+  const warnings = [];
+  const noisy = { info() {}, warn: m => warnings.push(String(m)), error() {} };
+  const wired = new WiredCameras({ wiredDir: dir, wiredDays: 7, wiredMaxGb: 1 }, noisy);
+  // A server that accepts the connection and then says nothing is what a camera looks like when the
+  // wifi is congested or another viewer holds its single RTSP slot: ffmpeg waits instead of exiting.
+  const server = net.createServer(() => {});
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    wired.start([{ serial: SERIAL, name: "Test", url: `rtsp://127.0.0.1:${server.address().port}/live0` }]);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert.equal(wired.stalled(SERIAL, Date.now()), false, "a recorder that just started is not stalled");
+    const later = Date.now() + 120_000;
+    assert.equal(wired.stalled(SERIAL, later), true);
+    wired.restartStalled(later);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.match(warnings.join("\n"), /nothing recorded/);
+    assert.equal(wired.status()[SERIAL].recording, false, "the hung recorder is gone");
+  } finally {
+    wired.stop();
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a camera that refuses the stream is asked to switch it back on", { skip: !hasFfmpeg }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wired-"));
+  const wired = new WiredCameras({ wiredDir: dir, wiredDays: 7, wiredMaxGb: 1 }, log);
+  // The camera keeps answering RTSP but says it has no stream, which is what a T8410 does once it has
+  // quietly dropped its RTSP server. Reconnecting never helps; only the switch does.
+  const server = net.createServer(socket => {
+    socket.on("data", data => {
+      const seq = /CSeq: *(\d+)/i.exec(String(data))?.[1] ?? "1";
+      socket.write(`RTSP/1.0 404 Not Found\r\nCSeq: ${seq}\r\n\r\n`);
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const asked = [];
+  wired.onRefused = serial => {
+    asked.push(serial);
+    return null; // the caller would hand back a fresh address here
+  };
+  try {
+    wired.start([{ serial: SERIAL, name: "Test", url: `rtsp://127.0.0.1:${server.address().port}/live0` }]);
+    for (let i = 0; i < 50 && !asked.length; i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(asked, [SERIAL]);
+  } finally {
+    wired.stop();
+    server.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

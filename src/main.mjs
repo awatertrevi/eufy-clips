@@ -7,6 +7,7 @@ import { ClipCache } from "./clips.mjs";
 import { Sync } from "./sync.mjs";
 import { Prefetch } from "./prefetch.mjs";
 import { WiredCameras } from "./wired.mjs";
+import { createLog } from "./log.mjs";
 import { startHttp } from "./http.mjs";
 
 const env = (name, fallback) => {
@@ -43,12 +44,7 @@ if (!config.wiredDir) config.wiredDir = `${config.dataDir}/segments`;
 if (config.token.length < 24) throw new Error("EUFY_CLIPS_TOKEN must be at least 24 characters");
 fs.mkdirSync(config.dataDir, { recursive: true });
 
-const stamp = () => new Date().toISOString();
-const log = {
-  info: (...a) => console.log(stamp(), ...a),
-  warn: (...a) => console.warn(stamp(), "WARN", ...a),
-  error: (...a) => console.error(stamp(), "ERROR", ...a),
-};
+const log = createLog();
 
 const client = new EufyClient(config, log);
 const store = new EventStore(config.dataDir);
@@ -58,6 +54,8 @@ const sync = new Sync(client, store, config, log);
 const prefetch = new Prefetch(client, store, cache, config, log);
 sync.onSynced = () => prefetch.kick();
 startHttp({ client, store, cache, sync, wired, config, log });
+// A camera that stops serving its stream needs its RTSP switch flipped, not another connection attempt.
+wired.onRefused = serial => client.enableRtsp(serial);
 client.on("state", async state => {
   if (state !== "connected") return;
   try {
