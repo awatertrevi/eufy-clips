@@ -41,8 +41,18 @@ the camera — a playback request (`CMD_RECORD_VIEW 1025`) yields byte-identical
 So the clip comes from the camera's RTSP stream instead. The service switches RTSP on, records every wired
 camera continuously into clock-aligned 30-second MPEG-TS segments, and cuts a clip out of that archive when
 one is asked for. The container matters: a recorder killed mid-segment leaves a readable TS file, while an
-MP4 without its closing index cannot be opened at all and fails every cut that touches it. The event index and thumbnails still come from the camera. An event from before the archive starts
-has no clip and the UI marks it "no clip".
+MP4 without its closing index cannot be opened at all and fails every cut that touches it. The event index and thumbnails still come from the camera.
+
+The archive has holes: a camera drops off the wifi, the Pi loses its network for a night, a recorder is
+restarted. Those holes are found before the cut rather than during it, because a concat across one fails
+outright, and an empty segment (ffmpeg opens the next file before it has anything to write, so a kill at that
+moment leaves one of zero bytes) is left out of every cut. An event with no video at all is marked "no clip"
+in the UI; an event the recorder caught only part of yields the longest unbroken run it does have.
+
+A camera can also go quiet without its recorder noticing — the wifi congests, or something else takes the
+single RTSP slot the camera serves — and ffmpeg then waits instead of exiting. A watchdog restarts a recorder
+that has written nothing for 90 seconds, and a camera that keeps refusing is retried with a growing delay
+instead of every five seconds.
 
 Budget roughly 11 GB per camera per day (1080p15 H.264 plus 16 kHz mono AAC); `EUFY_CLIPS_WIRED_DAYS` and
 `EUFY_CLIPS_WIRED_MAX_GB` bound it, and `EUFY_CLIPS_WIRED_DIR` should point at a disk that can take it.
@@ -62,6 +72,9 @@ Notes for anyone building on this:
 - eufy-security-client cancels a download (`CMD_DOWNLOAD_CANCEL`) when *its* stream timer sees no data for 5 s. When
   you handle the frames yourself, refresh that timer (`session.waitForStreamData`) or long clips stop at ~2 MB.
 - A cancelled download can keep arriving; only count frames whose P2P channel matches the camera's channel.
+- A service that loses its network repeats the same failure endlessly: one outage produced 222,757 identical
+  `send ENETUNREACH` lines, which filled the journal and pushed out the kernel messages that said why the wifi
+  had gone. `src/log.mjs` writes the first occurrence and then only a count per minute.
 - The library only emits "download finished" for streams it handled itself, so completion is detected as "all
   `frame_num` frames received".
 - All P2P work runs one task at a time with priorities (clip > thumbnail > sync), otherwise a clip waits behind

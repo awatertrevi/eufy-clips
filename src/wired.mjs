@@ -15,7 +15,18 @@ export const WIRED_MODELS = new Set(["T8410"]);
 // MPEG-TS, not MP4: a recorder that is killed mid-segment leaves a readable TS file, while an MP4
 // without its closing index cannot be opened at all and would poison every cut that touches it.
 const SEGMENT_SECONDS = 30;
+// A segment never outlives its clock slot by much, so anything beyond this is not one long recording
+// but the hole an outage left: without the cap a seven-hour gap looks like one very long segment and
+// the archive would claim to cover events it has no video of.
+const MAX_SEGMENT_MS = SEGMENT_SECONDS * 1500;
 const RESTART_DELAY_MS = 5_000;
+const MAX_RESTART_DELAY_MS = 60_000;
+// A camera that goes quiet (wifi congestion, a second viewer taking the single RTSP slot) leaves ffmpeg
+// running and reading nothing, so only a watchdog on the archive itself notices.
+// Below this there is no clip worth offering, only a flash of video.
+const MIN_CLIP_MS = 3_000;
+const STALL_MS = 90_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
 // The camera's clock and the stream clock drift a second or two, so a cut gets a little air on both sides.
 const PRE_ROLL_S = 2;
 const POST_ROLL_S = 3;
@@ -46,6 +57,7 @@ export class WiredCameras {
   #cameras = new Map();
   #recorders = new Map();
   #pruner = null;
+  #watchdog = null;
   #stopped = false;
 
   constructor(config, log) {
@@ -78,10 +90,15 @@ export class WiredCameras {
       if (!this.#recorders.has(camera.serial)) this.#recorders.set(camera.serial, this.#record(camera));
     }
     if (!this.#pruner) this.#pruner = setInterval(() => this.prune(), PRUNE_INTERVAL_MS).unref();
+    if (!this.#watchdog) this.#watchdog = setInterval(() => this.restartStalled(), WATCHDOG_INTERVAL_MS).unref();
   }
 
   stop() {
     this.#stopped = true;
+    clearInterval(this.#pruner);
+    clearInterval(this.#watchdog);
+    this.#pruner = null;
+    this.#watchdog = null;
     for (const rec of this.#recorders.values()) rec.child?.kill("SIGTERM");
   }
 
@@ -96,9 +113,10 @@ export class WiredCameras {
    * reboots, drops off the wifi or refuses a second viewer, and the archive should resume by itself.
    */
   #record(camera) {
-    const rec = { child: null, restarts: 0 };
+    const rec = { child: null, restarts: 0, failures: 0, startedAt: 0 };
     const spawnOnce = () => {
       if (this.#stopped) return;
+      rec.startedAt = Date.now();
       const dir = this.#cameraDir(camera.serial);
       const args = [
         "-nostdin", "-loglevel", "error",
@@ -122,8 +140,12 @@ export class WiredCameras {
         rec.child = null;
         if (this.#stopped) return;
         rec.restarts++;
-        this.#log.warn(`wired ${camera.name}: recorder stopped (${code}) ${stderr.trim().slice(0, 200)}; restarting`);
-        setTimeout(spawnOnce, RESTART_DELAY_MS).unref();
+        // A camera that keeps refusing (it serves one RTSP viewer at a time) would otherwise be retried
+        // every few seconds for as long as it is away, so each failed run waits a little longer.
+        rec.failures = Date.now() - rec.startedAt > MAX_RESTART_DELAY_MS ? 0 : rec.failures + 1;
+        const delay = Math.min(RESTART_DELAY_MS * Math.max(1, rec.failures), MAX_RESTART_DELAY_MS);
+        this.#log.warn(`wired ${camera.name}: recorder stopped (${code}) ${stderr.trim().slice(0, 200)}; restarting in ${delay / 1000}s`);
+        setTimeout(spawnOnce, delay).unref();
       });
       this.#log.info(`wired ${camera.name}: recording ${camera.url}`);
     };
@@ -149,10 +171,13 @@ export class WiredCameras {
       .filter(s => s.start !== null)
       .sort((a, b) => a.start - b.start);
     return list.map((s, i) => {
-      if (i + 1 < list.length) return { ...s, end: list[i + 1].start };
+      // The next file starting later does not mean this one ran that long: between the two there may be
+      // hours in which nothing was recorded at all, so a segment never reaches past its own slot.
+      const limit = s.start + MAX_SEGMENT_MS;
+      if (i + 1 < list.length) return { ...s, end: Math.min(list[i + 1].start, limit) };
       let end = s.start;
       try {
-        end = Math.max(s.start, fs.statSync(s.file).mtimeMs);
+        end = Math.min(Math.max(s.start, fs.statSync(s.file).mtimeMs), limit);
       } catch {
         /* the recorder rotated the file away between the listing and here */
       }
@@ -160,16 +185,56 @@ export class WiredCameras {
     });
   }
 
-  /** True when the archive covers the event's whole window. */
+  /**
+   * The longest unbroken run of video the archive holds for an event, clamped to [from, to], or null
+   * when there is nothing worth showing. The archive has holes — a camera drops off the wifi, the
+   * recorder is restarted, the Pi loses its network for a night — and a concat across such a hole
+   * fails outright, so the hole has to be found before the cut, not during it.
+   *
+   * A file of zero bytes is left out: ffmpeg opens the next segment before it has anything to write,
+   * so a recorder killed at that moment leaves one behind, and concat cannot open it at all.
+   */
+  #usable(serial, from, to, inside = { from, to }) {
+    const overlapping = this.#segments(serial)
+      .filter(s => s.end > from && s.start < to)
+      .filter(s => {
+        try {
+          return fs.statSync(s.file).size > 0;
+        } catch {
+          return false;
+        }
+      });
+    const runs = [];
+    for (const segment of overlapping) {
+      const run = runs[runs.length - 1];
+      if (run && segment.start <= run.end) {
+        run.end = Math.max(run.end, segment.end);
+        run.segments.push(segment);
+      } else {
+        runs.push({ start: segment.start, end: segment.end, segments: [segment] });
+      }
+    }
+    return runs
+      .map(run => ({
+        segments: run.segments,
+        from: Math.max(run.start, from),
+        to: Math.min(run.end, to),
+        // What the run shows of the event itself: a run holding only the pre-roll is no use.
+        shows: Math.min(run.end, inside.to) - Math.max(run.start, inside.from),
+      }))
+      .filter(run => run.shows >= MIN_CLIP_MS && run.to > run.from)
+      .sort((a, b) => b.shows - a.shows)[0] ?? null;
+  }
+
+  /**
+   * True when the archive holds video of this event. An event the recorder slept through is shown as
+   * "not recorded" rather than offered and then failing when the player asks for it.
+   */
   covers(event) {
     const from = localTime(event.start);
     const to = localTime(event.end) ?? from;
     if (from === null) return false;
-    const segments = this.#segments(event.station);
-    if (!segments.length) return false;
-    // The event needs a finished recording: its start inside the archive, its end no later than the
-    // last closed segment, so a clip is offered only once it can really be cut.
-    return segments[0].start <= from && segments[segments.length - 1].end >= to;
+    return this.#usable(event.station, from, Math.max(to, from + MIN_CLIP_MS)) !== null;
   }
 
   /**
@@ -186,16 +251,21 @@ export class WiredCameras {
     const wantTo = Math.min(to + POST_ROLL_S * 1000, archive[archive.length - 1].end);
     if (wantTo <= wantFrom) throw new Error("the recording of this event is still being written");
 
-    const segments = archive.filter(s => s.end > wantFrom && s.start < wantTo);
-    if (!segments.length) throw new Error("not recorded: outside the local archive");
+    const span = this.#usable(event.station, wantFrom, wantTo, { from, to: Math.max(to, from + MIN_CLIP_MS) });
+    if (!span) throw new Error("not recorded: the archive has no video of this event");
+    const { segments } = span;
+    if (span.to - span.from < wantTo - wantFrom) {
+      const seconds = Math.round((span.to - span.from) / 1000);
+      this.#log.warn(`clip ${event.id}: the archive has a gap here, cutting the ${seconds}s it does have`);
+    }
 
     const tmp = `${file}.tmp`;
     fs.mkdirSync(tmp, { recursive: true });
     try {
       const list = path.join(tmp, "segments.txt");
       fs.writeFileSync(list, segments.map(s => `file '${s.file.replaceAll("'", "'\\''")}'`).join("\n"));
-      const offset = Math.max(0, (wantFrom - segments[0].start) / 1000);
-      const duration = (wantTo - wantFrom) / 1000;
+      const offset = Math.max(0, (span.from - segments[0].start) / 1000);
+      const duration = (span.to - span.from) / 1000;
       const out = path.join(tmp, "out.mp4");
       await run("ffmpeg", [
         "-nostdin", "-loglevel", "error", "-y",
@@ -207,6 +277,29 @@ export class WiredCameras {
       return file;
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * True when a recorder is running but the archive has stopped growing. ffmpeg keeps waiting on a
+   * stream that has gone quiet instead of exiting, so without this the camera stays silently off.
+   */
+  stalled(serial, now = Date.now()) {
+    const rec = this.#recorders.get(serial);
+    if (!rec?.child) return false;
+    const segments = this.#segments(serial);
+    const lastWrite = segments.length ? segments[segments.length - 1].end : 0;
+    return now - Math.max(lastWrite, rec.startedAt) > STALL_MS;
+  }
+
+  /** Kill the recorders that stopped writing; their close handler starts them again. */
+  restartStalled(now = Date.now()) {
+    for (const serial of this.#recorders.keys()) {
+      if (!this.stalled(serial, now)) continue;
+      const name = this.#cameras.get(serial)?.name ?? serial;
+      this.#log.warn(`wired ${name}: nothing recorded for ${STALL_MS / 1000}s; restarting the recorder`);
+      // SIGTERM can sit unanswered while ffmpeg blocks on a read that never returns.
+      this.#recorders.get(serial).child?.kill("SIGKILL");
     }
   }
 
@@ -223,7 +316,9 @@ export class WiredCameras {
         } catch {
           continue;
         }
-        if (segment.start < cutoff) {
+        // An empty file is what a recorder killed on a segment boundary leaves behind: no video, and
+        // ffmpeg cannot open it, so it only gets in the way.
+        if (segment.start < cutoff || (size === 0 && segment.start < Date.now() - MAX_SEGMENT_MS)) {
           fs.rmSync(segment.file, { force: true });
           continue;
         }
