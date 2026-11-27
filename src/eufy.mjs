@@ -177,9 +177,26 @@ export class EufyClient extends EventEmitter {
     if (!station.isConnected()) {
       station.connect();
       for (let i = 0; i < 30 && !station.isConnected(); i++) await sleep(1000);
-      if (!station.isConnected()) throw new Error(`station ${serial} not reachable over P2P`);
+      if (!station.isConnected()) {
+        // After a dropped connection the library can stay stuck half-way an attempt and then ignores
+        // every later connect(), so a station that comes back is never reached again. Reset the session
+        // and its lookup key, so the next sync starts a fresh attempt.
+        await this.#resetSession(station);
+        throw new Error(`station ${serial} not reachable over P2P`);
+      }
     }
     return station;
+  }
+
+  async #resetSession(station) {
+    const session = station.p2pSession;
+    if (!session) return;
+    try {
+      await session.close();
+    } catch (error) {
+      this.#log.warn(`eufy: resetting ${station.getSerial()}: ${error.message}`);
+    }
+    session.dskKey = "";
   }
 
   /**
